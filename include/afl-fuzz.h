@@ -1183,6 +1183,7 @@ void init_probabilities(double *, int);
 void init_arr_u64(u64 *, int, u64);
 void init_arr_double(double *, int, double);
 void seed_bandit_report(afl_state_t *, FILE*);
+void seed_bandit_report_exp3(afl_state_t *, FILE*);
 
 void write_to_file(char *, char *, char *);
 
