@@ -2143,7 +2143,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
   // exp3
   afl->exp3_learning_rate = 0.1;
-  afl->exp3_decay_value = 0.9999;
+  afl->exp3_decay_value = 0.99999;
   afl->exp3_max_update = 10;
   afl->exp3_max_weight = 10;
 
