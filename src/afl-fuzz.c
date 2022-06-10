@@ -2469,6 +2469,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
       }
 
+      abort();
       skipped_fuzz = fuzz_one_bandit(afl); // return 0 if ok, 1 if something went wrong
 
       if (unlikely(!afl->stop_soon && exit_1)) { afl->stop_soon = 2; } // exit_1 is an option to fuzz jsut once? why = 2?...
