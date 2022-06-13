@@ -2112,7 +2112,7 @@ havoc_stage:
 
         // BANDIT
         if (r < 65){  // if normal operators, select it according to learnt probabilities
-          abort();
+          continue;
           int index = select_algorithm_bandit(afl, 26);
 
           ++afl->operator_temp_count[index]; // add it to the counter, no matter if it cannot be applied
