@@ -483,6 +483,13 @@ fail:
 
 int main(int argc, char **argv_orig, char **envp) {
 
+  clock_start = clock();
+  clock_total_time = 0;
+  clock_havoc_time = 0;
+  clock_bandit_time = 0;
+
+  total_havoc_counter = 0;
+
   s32 opt, auto_sync = 0 /*, user_set_cache = 0*/;
   u64 prev_queued = 0;
   u32 sync_interval_cnt = 0, seek_to = 0, show_help = 0,

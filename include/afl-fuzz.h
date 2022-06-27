@@ -808,9 +808,7 @@ typedef struct afl_state {
   u32 bandit_map_size;
 
   u64 default_havoc_counter;
-  u64 splicing_havoc_counter; 
-
-  
+  u64 splicing_havoc_counter;
 
 #ifdef INTROSPECTION
   char  mutation[8072];
@@ -820,6 +818,22 @@ typedef struct afl_state {
 #endif
 
 } afl_state_t;
+
+// TIME MEASUREMENT
+clock_t clock_havoc_begin; // variables to measure times inside the code 
+clock_t clock_havoc_end;
+
+clock_t clock_bandit_begin; // variables to measure times inside the code 
+clock_t clock_bandit_end;
+
+clock_t clock_start; // clock at fuzzer launch
+clock_t clock_end;
+
+double clock_total_time; // total amount of time spent
+double clock_havoc_time; // time spent in havoc stage
+double clock_bandit_time; // total amount of time spent on bandit code
+
+u64 total_havoc_counter; 
 
 struct custom_mutator {
 
@@ -1186,6 +1200,8 @@ void seed_bandit_report(afl_state_t *, FILE*);
 void seed_bandit_report_exp3(afl_state_t *, FILE*);
 
 void write_to_file(char *, char *, char *);
+
+void clock_time_spent_report(double, double, double, FILE*);
 
 /* Init */
 

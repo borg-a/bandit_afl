@@ -1942,6 +1942,24 @@ custom_mutator_stage:
    ****************/
 
 havoc_stage:
+  clock_havoc_begin = clock();
+  // total_havoc_counter++;
+  // printf("%lld", total_havoc_counter);
+
+  // if ((total_havoc_counter % 10000 == 0)) {
+  // free(file_name);
+  // }
+
+  clock_end = clock();
+  clock_total_time = (double)(clock_end - clock_start);
+  // getchar();
+  char file_name[64];
+  snprintf(file_name, 64, "%s/bandit/clock.txt",afl->out_dir);
+
+  FILE *fp;
+  fp = fopen(file_name, "w");
+  clock_time_spent_report(clock_total_time,clock_havoc_time,clock_bandit_time,fp);
+  fclose(fp);
 
   afl->stage_cur_byte = -1;
 
@@ -2042,6 +2060,7 @@ havoc_stage:
 #endif
 
     // BANDIT
+    clock_bandit_begin = clock();
     for (i = 0; i < operator_num_bandit; ++i) { // reset used operators count
 
       afl->operator_temp_count[i] = 0; 
@@ -2070,6 +2089,8 @@ havoc_stage:
 
       afl->queue_cur->initialized = 1;
     }
+    clock_bandit_end = clock();
+    clock_bandit_time += (double)(clock_bandit_end - clock_bandit_begin);
 
     for (i = 0; i < use_stacking; ++i) {
 
@@ -2112,10 +2133,12 @@ havoc_stage:
 
         // BANDIT
         if (r < 65){  // if normal operators, select it according to learnt probabilities
-          continue;
+          clock_bandit_begin = clock();
           int index = select_algorithm_bandit(afl, 26);
 
           ++afl->operator_temp_count[index]; // add it to the counter, no matter if it cannot be applied
+          clock_bandit_end = clock();
+          clock_bandit_time += (double)(clock_bandit_end - clock_bandit_begin);
 
 
           switch(index) {
@@ -2873,12 +2896,15 @@ havoc_stage:
 
     }
 
-    
+    clock_havoc_end = clock();
+    clock_havoc_time += (double)(clock_havoc_end - clock_havoc_begin);
     if (common_fuzz_stuff(afl, out_buf, temp_len)) { goto abandon_entry; }
+    clock_havoc_begin = clock();
 
 
     // BANDIT
     // char file_name[64];
+    clock_bandit_begin = clock();
 
     if (r_max == MAX_HAVOC_ENTRY + 1) {
       ++afl->default_havoc_counter;
@@ -2906,7 +2932,10 @@ havoc_stage:
         //printf("virgin map generated for seed: %d \n",afl->queue_cur->id);
       }
 
+       clock_bandit_end = clock();
+       clock_bandit_time += (double)(clock_bandit_end - clock_bandit_begin);
        u8 reward = has_new_bits(afl, afl->queue_cur->virgin_bits) ? 1 : 0; // set reward to 1 if not 0. This updates also the seed virgin map.
+       clock_bandit_begin = clock();
 
        // if (reward) {
        //  printf("reward %d provided for seed %d \n\n", reward, afl->queue_cur->id);
@@ -2938,6 +2967,8 @@ havoc_stage:
       }
       
     }
+    clock_bandit_end = clock();
+    clock_bandit_time += (double)(clock_bandit_end - clock_bandit_begin);
     
 
     /* out_buf might have been mangled a bit, so let's restore it to its
@@ -2979,6 +3010,9 @@ havoc_stage:
     afl->stage_cycles[STAGE_SPLICE] += afl->stage_max;
 
   }
+
+  clock_havoc_end = clock();
+  clock_havoc_time += (double)(clock_havoc_end - clock_havoc_begin);
 
 #ifndef IGNORE_FINDS
 
@@ -6059,5 +6093,24 @@ void write_to_file(char * file_name, char * mode, char * text) {
   fp = fopen(file_name, mode);
   fprintf(fp, "%s", text);
   fclose(fp);
+}
+
+void clock_time_spent_report(double total, double havoc, double bandit, FILE* fp) {
+  double havoc_total_prop, bandit_total_prop, bandit_havoc_prop;
+
+  if ((total != 0) && (havoc != 0)){
+    havoc_total_prop = havoc / total;
+    bandit_total_prop = bandit / total;
+    bandit_havoc_prop = bandit / havoc;
+  } else {
+    havoc_total_prop = 0;
+    bandit_total_prop = 0;
+    bandit_havoc_prop = 0;
+  }
+  fprintf(fp, "------------------------------\n");
+  fprintf(fp, "Total: %.5f \n", total);
+  fprintf(fp, "Havoc: %.5f, Total_p: %.5f \n", havoc, havoc_total_prop);
+  fprintf(fp, "Bandit: %.5f, Total_p: %.5f , Havoc_p: %.5f \n", bandit, bandit_total_prop, bandit_havoc_prop);
+  fprintf(fp, "------------------------------\n");
 }
 
