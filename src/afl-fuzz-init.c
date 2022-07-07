@@ -617,7 +617,7 @@ void read_foreign_testcases(afl_state_t *afl, int first) {
 
         }
 
-        u32 len = write_to_testcase(afl, mem, st.st_size, 1);
+        u32 len = write_to_testcase(afl, (void **)&mem, st.st_size, 1);
         fault = fuzz_run_target(afl, &afl->fsrv, afl->fsrv.exec_tmout);
         afl->syncing_party = foreign_name;
         afl->queued_imported += save_if_interesting(afl, mem, len, fault);
@@ -1483,33 +1483,6 @@ static u8 delete_files(u8 *path, u8 *prefix) {
 
 }
 
-/* A helper function for handle_existing_out_dir(), deleting all
-   files in a directory. */
-
-static u8 delete_files_all(u8 *path) {
-
-  DIR *          d;
-  struct dirent *d_ent;
-
-  d = opendir(path);
-
-  if (!d) { return 0; }
-
-  while ((d_ent = readdir(d))) {
-    if (d_ent->d_name[0] != '.') {
-      u8 *fname = alloc_printf("%s/%s", path, d_ent->d_name);
-      if (unlink(fname)) { PFATAL("Unable to delete '%s'", fname); }
-      ck_free(fname);
-    }
-
-  }
-
-  closedir(d);
-
-  return !!rmdir(path);
-
-}
-
 /* Get the number of runnable processes, with some simple smoothing. */
 
 double get_runnable_processes(void) {
@@ -1879,12 +1852,6 @@ static void handle_existing_out_dir(afl_state_t *afl) {
 
   /* Wow... is that all? If yes, celebrate! */
 
-  // BANDIT
-  fn = alloc_printf("%s/bandit", afl->out_dir);
-  if (delete_files_all(fn)) { goto dir_cleanup_failed; }
-  // if (unlink(fn) && errno != ENOENT) { goto dir_cleanup_failed; }
-  ck_free(fn);
-
   return;
 
 dir_cleanup_failed:
@@ -2055,13 +2022,6 @@ void setup_dirs_fds(afl_state_t *afl) {
   /* All recorded hangs. */
 
   tmp = alloc_printf("%s/hangs", afl->out_dir);
-  if (mkdir(tmp, 0700)) { PFATAL("Unable to create '%s'", tmp); }
-  ck_free(tmp);
-
-  // BANDIT
-  /* seeds bandit algorithm stats reports */
-
-  tmp = alloc_printf("%s/bandit", afl->out_dir);
   if (mkdir(tmp, 0700)) { PFATAL("Unable to create '%s'", tmp); }
   ck_free(tmp);
 

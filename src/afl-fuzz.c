@@ -167,7 +167,9 @@ static void usage(u8 *argv0, int more_help) {
       "                  See docs/README.MOpt.md\n"
       "  -c program    - enable CmpLog by specifying a binary compiled for "
       "it.\n"
-      "                  if using QEMU, just use -c 0.\n"
+      "                  if using QEMU/FRIDA or if you the fuzzing target is "
+      "compiled"
+      "                  for CmpLog then just use -c 0.\n"
       "  -l cmplog_opts - CmpLog configuration values (e.g. \"2AT\"):\n"
       "                  1=small files, 2=larger files (default), 3=all "
       "files,\n"
@@ -257,6 +259,7 @@ static void usage(u8 *argv0, int more_help) {
       "AFL_IGNORE_PROBLEMS: do not abort fuzzing if an incorrect setup is detected during a run\n"
       "AFL_IMPORT_FIRST: sync and import test cases from other fuzzer instances first\n"
       "AFL_INPUT_LEN_MIN/AFL_INPUT_LEN_MAX: like -g/-G set min/max fuzz length produced\n"
+      "AFL_PIZZA_MODE: 1 - enforce pizza mode, 0 - disable for April 1st\n"
       "AFL_KILL_SIGNAL: Signal ID delivered to child processes on timeout, etc. (default: SIGKILL)\n"
       "AFL_MAP_SIZE: the shared memory size for that target. must be >= the size\n"
       "              the target was compiled for\n"
@@ -292,6 +295,8 @@ static void usage(u8 *argv0, int more_help) {
       "AFL_STATSD_TAGS_FLAVOR: set statsd tags format (default: disable tags)\n"
       "                        Supported formats are: 'dogstatsd', 'librato',\n"
       "                        'signalfx' and 'influxdb'\n"
+      "AFL_SYNC_TIME: sync time between fuzzing instances (in minutes)\n"
+      "AFL_NO_CRASH_README: do not create a README in the crashes directory\n"
       "AFL_TESTCACHE_SIZE: use a cache for testcases, improves performance (in MB)\n"
       "AFL_TMPDIR: directory to use for input file generation (ramdisk recommended)\n"
       "AFL_EARLY_FORKSERVER: force an early forkserver in an afl-clang-fast/\n"
@@ -466,6 +471,9 @@ nyx_plugin_handler_t *afl_load_libnyx_plugin(u8 *libnyx_binary) {
       dlsym(handle, "nyx_get_bitmap_buffer_size");
   if (plugin->nyx_get_bitmap_buffer_size == NULL) { goto fail; }
 
+  plugin->nyx_get_aux_string = dlsym(handle, "nyx_get_aux_string");
+  if (plugin->nyx_get_aux_string == NULL) { goto fail; }
+
   OKF("libnyx plugin is ready!");
   return plugin;
 
@@ -482,13 +490,6 @@ fail:
 /* Main entry point */
 
 int main(int argc, char **argv_orig, char **envp) {
-
-  clock_start = clock();
-  clock_total_time = 0;
-  clock_havoc_time = 0;
-  clock_bandit_time = 0;
-
-  total_havoc_counter = 0;
 
   s32 opt, auto_sync = 0 /*, user_set_cache = 0*/;
   u64 prev_queued = 0;
@@ -1465,6 +1466,13 @@ int main(int argc, char **argv_orig, char **envp) {
 
   if (!afl->use_banner) { afl->use_banner = argv[optind]; }
 
+  if (afl->shm.cmplog_mode &&
+      (!strcmp("-", afl->cmplog_binary) || !strcmp("0", afl->cmplog_binary))) {
+
+    afl->cmplog_binary = argv[optind];
+
+  }
+
   if (strchr(argv[optind], '/') == NULL && !afl->unicorn_mode) {
 
     WARNF(cLRD
@@ -1644,7 +1652,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
   }
 
-  OKF("Generating fuzz data with a a length of min=%u max=%u", afl->min_length,
+  OKF("Generating fuzz data with a length of min=%u max=%u", afl->min_length,
       afl->max_length);
   u32 min_alloc = MAX(64U, afl->min_length);
   afl_realloc(AFL_BUF_PARAM(in_scratch), min_alloc);
@@ -1682,7 +1690,7 @@ int main(int argc, char **argv_orig, char **envp) {
   if (getenv("LD_PRELOAD")) {
 
     WARNF(
-        "LD_PRELOAD is set, are you sure that is what to you want to do "
+        "LD_PRELOAD is set, are you sure that is what you want to do "
         "instead of using AFL_PRELOAD?");
 
   }
@@ -2142,20 +2150,7 @@ int main(int argc, char **argv_orig, char **envp) {
   memset(afl->virgin_tmout, 255, map_size);
   memset(afl->virgin_crash, 255, map_size);
 
-  // BANDIT
   afl->bandit_map_size = map_size;
-
-  // ucb
-  afl->ucb_confidence_value = 0.1;
-
-  // exp3
-  afl->exp3_learning_rate = 0.1;
-  afl->exp3_decay_value = 0.99995;
-  afl->exp3_max_update = 10;
-  afl->exp3_max_weight = 10;
-
-  afl->default_havoc_counter = 0;
-  afl->splicing_havoc_counter = 0; 
 
   perform_dry_run(afl);
 
@@ -2259,7 +2254,7 @@ int main(int argc, char **argv_orig, char **envp) {
   OKF("Writing mutation introspection to '%s'", ifn);
   #endif
 
-  while (likely(!afl->stop_soon)) { // BEGINNING OF FUZZING LOOP?
+  while (likely(!afl->stop_soon)) {
 
     cull_queue(afl);
 
@@ -2275,26 +2270,44 @@ int main(int argc, char **argv_orig, char **envp) {
 
       }
 
-      // start cycling the queue?
-      ++afl->queue_cycle; // queue round counter...?
+      ++afl->queue_cycle;
       runs_in_current_cycle = (u32)-1;
       afl->cur_skipped_items = 0;
 
-      if (unlikely(afl->old_seed_selection)) { // avoid picking same seed twice in a row?
+      // 1st april fool joke - enable pizza mode
+      // to not waste time on checking the date we only do this when the
+      // queue is fully cycled.
+      time_t     cursec = time(NULL);
+      struct tm *curdate = localtime(&cursec);
+      if (likely(!afl->afl_env.afl_pizza_mode)) {
 
-        afl->current_entry = 0; // first index
-        while (unlikely(afl->current_entry < afl->queued_items && // inside the queue range
-                        afl->queue_buf[afl->current_entry]->disabled)) { // but the entry is disabled, (meaning?)
+        if (unlikely(curdate->tm_mon == 3 && curdate->tm_mday == 1)) {
+
+          afl->pizza_is_served = 1;
+
+        } else {
+
+          afl->pizza_is_served = 0;
+
+        }
+
+      }
+
+      if (unlikely(afl->old_seed_selection)) {
+
+        afl->current_entry = 0;
+        while (unlikely(afl->current_entry < afl->queued_items &&
+                        afl->queue_buf[afl->current_entry]->disabled)) {
 
           ++afl->current_entry;
 
         }
 
-        if (afl->current_entry >= afl->queued_items) { afl->current_entry = 0; } // out of seed's queue range
+        if (afl->current_entry >= afl->queued_items) { afl->current_entry = 0; }
 
-        afl->queue_cur = afl->queue_buf[afl->current_entry]; // current offset to queue, why don't use queue but queue_buf?
+        afl->queue_cur = afl->queue_buf[afl->current_entry];
 
-        if (unlikely(seek_to)) { // no idea what happens here
+        if (unlikely(seek_to)) {
 
           if (unlikely(seek_to >= afl->queued_items)) {
 
@@ -2311,7 +2324,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
       }
 
-      if (unlikely(afl->not_on_tty)) { // different output mode??
+      if (unlikely(afl->not_on_tty)) {
 
         ACTF("Entering queue cycle %llu.", afl->queue_cycle);
         fflush(stdout);
@@ -2321,23 +2334,23 @@ int main(int argc, char **argv_orig, char **envp) {
       /* If we had a full queue cycle with no new finds, try
          recombination strategies next. */
 
-      if (unlikely(afl->queued_items == prev_queued // new queue equal to the previous one, no new findings??
+      if (unlikely(afl->queued_items == prev_queued
                    /* FIXME TODO BUG: && (get_cur_time() - afl->start_time) >=
                       3600 */
                    )) {
 
-        if (afl->use_splicing) { // if splicing enabled
+        if (afl->use_splicing) {
 
           ++afl->cycles_wo_finds;
 
           if (unlikely(afl->shm.cmplog_mode &&
-                       afl->cmplog_max_filesize < MAX_FILE)) { // modifiy something about the file size..?
+                       afl->cmplog_max_filesize < MAX_FILE)) {
 
             afl->cmplog_max_filesize <<= 4;
 
           }
 
-          switch (afl->expand_havoc) { // different ways to try to improve havoc power??
+          switch (afl->expand_havoc) {
 
             case 0:
               // this adds extra splicing mutation options to havoc mode
@@ -2379,7 +2392,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
           }
 
-        } else { // if there is no flag NO_SPLICING, enable splicing for next round?
+        } else {
 
   #ifndef NO_SPLICING
           afl->use_splicing = 1;
@@ -2389,7 +2402,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
         }
 
-      } else { // something new found, reset counter of cycles without findings
+      } else {
 
         afl->cycles_wo_finds = 0;
 
@@ -2402,11 +2415,11 @@ int main(int argc, char **argv_orig, char **envp) {
               afl->queued_items);
   #endif
 
-      if (afl->cycle_schedules) { // if you want to cycle different power schedules
+      if (afl->cycle_schedules) {
 
         /* we cannot mix non-AFLfast schedules with others */
 
-        switch (afl->schedule) { // switch to next schedule type
+        switch (afl->schedule) {
 
           case EXPLORE:
             afl->schedule = EXPLOIT;
@@ -2451,37 +2464,35 @@ int main(int argc, char **argv_orig, char **envp) {
 
       }
 
-      prev_queued = afl->queued_items; // store current queue as previous queue for next cycle
+      prev_queued = afl->queued_items;
 
     }
 
-    ++runs_in_current_cycle; 
+    ++runs_in_current_cycle;
 
-    do { // INNER FUZZING LOOP, ONCE QUEUE ORDER AND POWER SCORES ARE DEFINED?
+    do {
 
-      if (likely(!afl->old_seed_selection)) { // afl->old_seed_selection : vanilla AFL seed selection
-      // this one is AFL FAST?
+      if (likely(!afl->old_seed_selection)) {
 
         if (unlikely(prev_queued_items < afl->queued_items ||
                      afl->reinit_table)) {
 
           // we have new queue entries since the last run, recreate alias table
           prev_queued_items = afl->queued_items;
-          create_alias_table(afl); // table with prob to choose one of the entries, apparently expensive to build but then efficient to use
+          create_alias_table(afl);
 
         }
 
-        afl->current_entry = select_next_queue_entry(afl); // pick next queue entry using the alias table
-        afl->queue_cur = afl->queue_buf[afl->current_entry]; // set the current element to the selected entry
+        afl->current_entry = select_next_queue_entry(afl);
+        afl->queue_cur = afl->queue_buf[afl->current_entry];
 
       }
 
-      skipped_fuzz = fuzz_one_bandit(afl); // return 0 if ok, 1 if something went wrong
+      skipped_fuzz = fuzz_one(afl);
 
-      if (unlikely(!afl->stop_soon && exit_1)) { afl->stop_soon = 2; } // exit_1 is an option to fuzz jsut once? why = 2?...
+      if (unlikely(!afl->stop_soon && exit_1)) { afl->stop_soon = 2; }
 
-      if (unlikely(afl->old_seed_selection)) { // afl->old_seed_selection : vanilla AFL seed selection
-        // in the vanilla AFL goes to the next enabled entry
+      if (unlikely(afl->old_seed_selection)) {
 
         while (++afl->current_entry < afl->queued_items &&
                afl->queue_buf[afl->current_entry]->disabled)
@@ -2489,13 +2500,13 @@ int main(int argc, char **argv_orig, char **envp) {
         if (unlikely(afl->current_entry >= afl->queued_items ||
                      afl->queue_buf[afl->current_entry] == NULL ||
                      afl->queue_buf[afl->current_entry]->disabled))
-          afl->queue_cur = NULL; // null if out of the queue
+          afl->queue_cur = NULL;
         else
-          afl->queue_cur = afl->queue_buf[afl->current_entry]; // set the next one
+          afl->queue_cur = afl->queue_buf[afl->current_entry];
 
       }
 
-    } while (skipped_fuzz && afl->queue_cur && !afl->stop_soon); // END OF INNER FUZZING LOOP
+    } while (skipped_fuzz && afl->queue_cur && !afl->stop_soon);
 
     if (likely(!afl->stop_soon && afl->sync_id)) {
 
@@ -2504,7 +2515,7 @@ int main(int argc, char **argv_orig, char **envp) {
         if (unlikely(afl->is_main_node)) {
 
           if (unlikely(get_cur_time() >
-                       (SYNC_TIME >> 1) + afl->last_sync_time)) {
+                       (afl->sync_time >> 1) + afl->last_sync_time)) {
 
             if (!(sync_interval_cnt++ % (SYNC_INTERVAL / 3))) {
 
@@ -2516,7 +2527,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
         } else {
 
-          if (unlikely(get_cur_time() > SYNC_TIME + afl->last_sync_time)) {
+          if (unlikely(get_cur_time() > afl->sync_time + afl->last_sync_time)) {
 
             if (!(sync_interval_cnt++ % SYNC_INTERVAL)) { sync_fuzzers(afl); }
 
@@ -2532,7 +2543,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
     }
 
-  } // END OF FUZZING LOOP
+  }
 
 stop_fuzzing:
 
@@ -2541,8 +2552,17 @@ stop_fuzzing:
   write_bitmap(afl);
   save_auto(afl);
 
-  SAYF(CURSOR_SHOW cLRD "\n\n+++ Testing aborted %s +++\n" cRST,
-       afl->stop_soon == 2 ? "programmatically" : "by user");
+  if (afl->afl_env.afl_pizza_mode) {
+
+    SAYF(CURSOR_SHOW cLRD "\n\n+++ Baking aborted %s +++\n" cRST,
+         afl->stop_soon == 2 ? "programmatically" : "by the chef");
+
+  } else {
+
+    SAYF(CURSOR_SHOW cLRD "\n\n+++ Testing aborted %s +++\n" cRST,
+         afl->stop_soon == 2 ? "programmatically" : "by user");
+
+  }
 
   if (afl->most_time_key == 2) {
 

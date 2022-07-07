@@ -25,8 +25,12 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#define _GNU_SOURCE
-#define __USE_GNU
+#ifndef _GNU_SOURCE
+  #define _GNU_SOURCE
+#endif
+#ifndef __USE_GNU
+  #define __USE_GNU
+#endif
 #include <string.h>
 #include <strings.h>
 #include <math.h>
@@ -715,17 +719,23 @@ char *get_afl_env(char *env) {
 
   char *val;
 
-  if ((val = getenv(env)) != NULL) {
+  if ((val = getenv(env))) {
 
-    if (!be_quiet) {
+    if (*val) {
 
-      OKF("Loaded environment variable %s with value %s", env, val);
+      if (!be_quiet) {
+
+        OKF("Enabled environment variable %s with value %s", env, val);
+
+      }
+
+      return val;
 
     }
 
   }
 
-  return val;
+  return NULL;
 
 }
 
@@ -805,10 +815,7 @@ bool extract_and_set_env(u8 *env_str) {
     *rest = '\0';  // done with variable value
 
     rest += 1;
-    if (rest < end && *rest != ' ') { goto free_and_return; }
-
     num_pairs++;
-
     setenv(key, val, 1);
 
   }

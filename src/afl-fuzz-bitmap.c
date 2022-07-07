@@ -237,40 +237,6 @@ inline u8 has_new_bits(afl_state_t *afl, u8 *virgin_map) {
 
 }
 
-
-inline u8 has_new_bits_bandit(afl_state_t *afl, u8 *virgin_map) {
-
-#ifdef WORD_SIZE_64
-
-  u64 *current = (u64 *)afl->queue_cur->trace_bits;
-  u64 *virgin = (u64 *)virgin_map;
-
-  u32 i = ((afl->fsrv.real_map_size + 7) >> 3);
-
-#else
-
-  u32 *current = (u32 *)afl->queue_cur->trace_bits;
-  u32 *virgin = (u32 *)virgin_map;
-
-  u32 i = ((afl->fsrv.real_map_size + 3) >> 2);
-
-#endif                                                     /* ^WORD_SIZE_64 */
-
-  u8 ret = 0;
-  // printf("\n%d \n",i);
-  while (i--) {
-
-    if (unlikely(*current)) discover_word(&ret, current, virgin);
-
-    current++;
-    virgin++;
-
-  }
-
-  return ret;
-
-}
-
 /* A combination of classify_counts and has_new_bits. If 0 is returned, then the
  * trace bits are kept as-is. Otherwise, the trace bits are overwritten with
  * classified values.
@@ -302,27 +268,6 @@ inline u8 has_new_bits_unclassified(afl_state_t *afl, u8 *virgin_map) {
 
 }
 
-inline u8 has_new_bits_unclassified_bandit(afl_state_t *afl, u8 *virgin_map) {
-
-  /* Handle the hot path first: no new coverage */
-  u8 *end = afl->queue_cur->trace_bits + afl->fsrv.map_size;
-
-#ifdef WORD_SIZE_64
-
-  if (!skim((u64 *)virgin_map, (u64 *)afl->queue_cur->trace_bits, (u64 *)end))
-    return 0;
-
-#else
-
-  if (!skim((u32 *)virgin_map, (u32 *)afl->queue_cur->trace_bits, (u32 *)end))
-    return 0;
-
-#endif                                                     /* ^WORD_SIZE_64 */
-  // classify_counts(&afl->fsrv);
-  return has_new_bits_bandit(afl, virgin_map);
-
-}
-
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
    count information here. This is called only sporadically, for some
    new paths. */
@@ -346,6 +291,15 @@ void minimize_bits(afl_state_t *afl, u8 *dst, u8 *src) {
    that led to its discovery. Returns a ptr to afl->describe_op_buf_256. */
 
 u8 *describe_op(afl_state_t *afl, u8 new_bits, size_t max_description_len) {
+
+  u8 is_timeout = 0;
+
+  if (new_bits & 0xf0) {
+
+    new_bits -= 0x80;
+    is_timeout = 1;
+
+  }
 
   size_t real_max_len =
       MIN(max_description_len, sizeof(afl->describe_op_buf_256));
@@ -380,6 +334,7 @@ u8 *describe_op(afl_state_t *afl, u8 new_bits, size_t max_description_len) {
       ret[len_current] = '\0';
 
       ssize_t size_left = real_max_len - len_current - strlen(",+cov") - 2;
+      if (is_timeout) { size_left -= strlen(",+tout"); }
       if (unlikely(size_left <= 0)) FATAL("filename got too long");
 
       const char *custom_description =
@@ -424,6 +379,8 @@ u8 *describe_op(afl_state_t *afl, u8 new_bits, size_t max_description_len) {
     }
 
   }
+
+  if (is_timeout) { strcat(ret, ",+tout"); }
 
   if (new_bits == 2) { strcat(ret, ",+cov"); }
 
@@ -478,10 +435,10 @@ void write_crash_readme(afl_state_t *afl) {
       "them to a vendor? Check out the afl-tmin that comes with the fuzzer!\n\n"
 
       "Found any cool bugs in open-source tools using afl-fuzz? If yes, please "
-      "drop\n"
-      "an mail at <afl-users@googlegroups.com> once the issues are fixed\n\n"
-
-      "  https://github.com/AFLplusplus/AFLplusplus\n\n",
+      "post\n"
+      "to https://github.com/AFLplusplus/AFLplusplus/issues/286 once the "
+      "issues\n"
+      " are fixed :)\n\n",
 
       afl->orig_cmdline,
       stringify_mem_size(val_buf, sizeof(val_buf),
@@ -502,7 +459,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
   u8  fn[PATH_MAX];
   u8 *queue_fn = "";
-  u8  new_bits = 0, keeping = 0, res, classified = 0;
+  u8  new_bits = 0, keeping = 0, res, classified = 0, is_timeout = 0;
   s32 fd;
   u64 cksum = 0;
 
@@ -520,18 +477,14 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
   }
 
-  // BANDIT
-  // afl->queue_cur->trace_bits = malloc(afl->fsrv.map_size);
-  // memcpy(afl->queue_cur->trace_bits, afl->fsrv.trace_bits, afl->fsrv.map_size);
-
-  if (likely(fault == afl->crash_mode)) { // means the execution results in a crash??
+  if (likely(fault == afl->crash_mode)) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
-    new_bits = has_new_bits_unclassified(afl, afl->virgin_bits); // check if it is a new path -> new crash
+    new_bits = has_new_bits_unclassified(afl, afl->virgin_bits);
 
-    if (likely(!new_bits)) { // not unique crash
+    if (likely(!new_bits)) {
 
       if (unlikely(afl->crash_mode)) { ++afl->total_crashes; }
       return 0;
@@ -540,11 +493,14 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
     classified = new_bits;
 
+  save_to_queue:
+
 #ifndef SIMPLE_FILES
 
-    queue_fn = alloc_printf(
-        "%s/queue/id:%06u,%s", afl->out_dir, afl->queued_items,
-        describe_op(afl, new_bits, NAME_MAX - strlen("id:000000,")));
+    queue_fn =
+        alloc_printf("%s/queue/id:%06u,%s", afl->out_dir, afl->queued_items,
+                     describe_op(afl, new_bits + is_timeout,
+                                 NAME_MAX - strlen("id:000000,")));
 
 #else
 
@@ -587,7 +543,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
 #endif
 
-    if (new_bits == 2) { // the execution covered new edges
+    if (new_bits == 2) {
 
       afl->queue_top->has_new_cov = 1;
       ++afl->queued_with_cov;
@@ -627,8 +583,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
   }
 
-  switch (fault) { // What's happening here? why this happens after the falut == afl->crash_mode branch...
-                   // there are two other virgin maps, one for crashes and one for hangings, to be able to define unique ones.
+  switch (fault) {
 
     case FSRV_RUN_TMOUT:
 
@@ -656,7 +611,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
       }
 
-      ++afl->saved_tmouts;
+      is_timeout = 0x80;
 #ifdef INTROSPECTION
       if (afl->custom_mutators_count && afl->current_custom_fuzz) {
 
@@ -693,7 +648,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
       if (afl->fsrv.exec_tmout < afl->hang_tmout) {
 
         u8 new_fault;
-        len = write_to_testcase(afl, mem, len, 0);
+        len = write_to_testcase(afl, &mem, len, 0);
         new_fault = fuzz_run_target(afl, &afl->fsrv, afl->hang_tmout);
         classify_counts(&afl->fsrv);
 
@@ -707,7 +662,20 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
         }
 
-        if (afl->stop_soon || new_fault != FSRV_RUN_TMOUT) { return keeping; }
+        if (afl->stop_soon || new_fault != FSRV_RUN_TMOUT) {
+
+          if (afl->afl_env.afl_keep_timeouts) {
+
+            ++afl->saved_tmouts;
+            goto save_to_queue;
+
+          } else {
+
+            return keeping;
+
+          }
+
+        }
 
       }
 
@@ -752,7 +720,12 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
       }
 
-      if (unlikely(!afl->saved_crashes)) { write_crash_readme(afl); }
+      if (unlikely(!afl->saved_crashes) &&
+          (afl->afl_env.afl_no_crash_readme != 1)) {
+
+        write_crash_readme(afl);
+
+      }
 
 #ifndef SIMPLE_FILES
 
@@ -763,7 +736,7 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 #else
 
       snprintf(fn, PATH_MAX, "%s/crashes/id_%06llu_%02u", afl->out_dir,
-               afl->saved_crashes, afl->last_kill_signal);
+               afl->saved_crashes, afl->fsrv.last_kill_signal);
 
 #endif                                                    /* ^!SIMPLE_FILES */
 
@@ -830,6 +803,25 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
   if (unlikely(fd < 0)) { PFATAL("Unable to create '%s'", fn); }
   ck_write(fd, mem, len, fn);
   close(fd);
+
+#ifdef __linux__
+  if (afl->fsrv.nyx_mode && fault == FSRV_RUN_CRASH) {
+
+    u8 fn_log[PATH_MAX];
+
+    (void)(snprintf(fn_log, PATH_MAX, "%s.log", fn) + 1);
+    fd = open(fn_log, O_WRONLY | O_CREAT | O_EXCL, DEFAULT_PERMISSION);
+    if (unlikely(fd < 0)) { PFATAL("Unable to create '%s'", fn_log); }
+
+    u32 nyx_aux_string_len = afl->fsrv.nyx_handlers->nyx_get_aux_string(
+        afl->fsrv.nyx_runner, afl->fsrv.nyx_aux_string, 0x1000);
+
+    ck_write(fd, afl->fsrv.nyx_aux_string, nyx_aux_string_len, fn_log);
+    close(fd);
+
+  }
+
+#endif
 
   return keeping;
 

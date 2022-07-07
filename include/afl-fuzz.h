@@ -60,9 +60,6 @@
 #include <dlfcn.h>
 #include <sched.h>
 
-// BANDIT
-#include <math.h>
-
 #include <netdb.h>
 #include <netinet/in.h>
 
@@ -152,10 +149,6 @@ struct tainted {
 
 };
 
-// BANDIT
-#define operator_num_bandit 26
-#define operator_num_bandit_mopt 15
-
 struct queue_entry {
 
   u8 *fname;                            /* File name for the test case      */
@@ -200,37 +193,8 @@ struct queue_entry {
 
   struct queue_entry *mother;           /* queue entry this based on        */
 
-  //  BANDIT
-  u8 *virgin_bits;  // discovered bits so far for this seed
+  u8 *virgin_bits;
 
-  u8 *trace_bits; // exec trace to check?
-
-  u8 initialized;
-
-  // UCB
-  u64 operator_app_count[operator_num_bandit];
-  u64 operator_app_count_mopt[operator_num_bandit_mopt];
-
-  double operator_reward_avg[operator_num_bandit];
-  double operator_reward_avg_mopt[operator_num_bandit_mopt];
-
-  u64 ucb_timesteps; // total timesteps for the bandit problem
-  u64 ucb_timesteps_mopt;
-
-  u64 ucb_update_count; // times the values are updated (batches of mutations)
-
-  // EXP3
-  u64 exp3_updates_count;
-
-  double exp_weights[operator_num_bandit];
-  double exp_weights_mopt[operator_num_bandit_mopt];
-
-  double exp_probs[operator_num_bandit];
-  double exp_probs_mopt[operator_num_bandit_mopt];
-
-  double probability_bandit[operator_num_bandit];
-  double probability_bandit_mopt[operator_num_bandit_mopt]; // probabilities for operators
-  
 };
 
 struct extra_data {
@@ -268,12 +232,13 @@ enum {
   /* 12 */ STAGE_EXTRAS_UO,
   /* 13 */ STAGE_EXTRAS_UI,
   /* 14 */ STAGE_EXTRAS_AO,
-  /* 15 */ STAGE_HAVOC,
-  /* 16 */ STAGE_SPLICE,
-  /* 17 */ STAGE_PYTHON,
-  /* 18 */ STAGE_CUSTOM_MUTATOR,
-  /* 19 */ STAGE_COLORIZATION,
-  /* 20 */ STAGE_ITS,
+  /* 15 */ STAGE_EXTRAS_AI,
+  /* 16 */ STAGE_HAVOC,
+  /* 17 */ STAGE_SPLICE,
+  /* 18 */ STAGE_PYTHON,
+  /* 19 */ STAGE_CUSTOM_MUTATOR,
+  /* 20 */ STAGE_COLORIZATION,
+  /* 21 */ STAGE_ITS,
 
   STAGE_NUM_MAX
 
@@ -290,7 +255,6 @@ enum {
 };
 
 #define operator_num 19
-
 #define swarm_num 5
 #define period_core 500000
 
@@ -423,7 +387,8 @@ typedef struct afl_env_vars {
       afl_force_ui, afl_i_dont_care_about_missing_crashes, afl_bench_just_one,
       afl_bench_until_crash, afl_debug_child, afl_autoresume, afl_cal_fast,
       afl_cycle_schedules, afl_expand_havoc, afl_statsd, afl_cmplog_only_new,
-      afl_exit_on_seed_issues, afl_try_affinity, afl_ignore_problems;
+      afl_exit_on_seed_issues, afl_try_affinity, afl_ignore_problems,
+      afl_keep_timeouts, afl_pizza_mode, afl_no_crash_readme;
 
   u8 *afl_tmpdir, *afl_custom_mutator_library, *afl_python_module, *afl_path,
       *afl_hang_tmout, *afl_forksrv_init_tmout, *afl_preload,
@@ -521,7 +486,8 @@ typedef struct afl_state {
       debug,                            /* Debug mode                       */
       custom_only,                      /* Custom mutator only mode         */
       is_main_node,                     /* if this is the main node         */
-      is_secondary_node;                /* if this is a secondary instance  */
+      is_secondary_node,                /* if this is a secondary instance  */
+      pizza_is_served;                  /* pizza mode                       */
 
   u32 stats_update_freq;                /* Stats update frequency (execs)   */
 
@@ -613,7 +579,8 @@ typedef struct afl_state {
       last_find_time,                   /* Time for most recent path (ms)   */
       last_crash_time,                  /* Time for most recent crash (ms)  */
       last_hang_time,                   /* Time for most recent hang (ms)   */
-      exit_on_time;                     /* Delay to exit if no new paths    */
+      exit_on_time,                     /* Delay to exit if no new paths    */
+      sync_time;                        /* Sync time (ms)                   */
 
   u32 slowest_exec_ms,                  /* Slowest testcase non hang in ms  */
       subseq_tmouts;                    /* Number of timeouts in a row      */
@@ -793,22 +760,7 @@ typedef struct afl_state {
    * is too large) */
   struct queue_entry **q_testcase_cache;
 
-  // BANDIT
-  u16 operator_temp_count[operator_num_bandit]; // counter of the applied mutators at every fuzzing step, reset every time
-  u16 operator_temp_count_mopt[operator_num_bandit_mopt];
-
-  double ucb_confidence_value; // confidence level for UCB algorithm
-
-  double exp3_learning_rate;
-  double exp3_decay_value;
-  
-  u8 exp3_max_update;
-  double exp3_max_weight;
-
   u32 bandit_map_size;
-
-  u64 default_havoc_counter;
-  u64 splicing_havoc_counter;
 
 #ifdef INTROSPECTION
   char  mutation[8072];
@@ -818,22 +770,6 @@ typedef struct afl_state {
 #endif
 
 } afl_state_t;
-
-// TIME MEASUREMENT
-clock_t clock_havoc_begin; // variables to measure times inside the code 
-clock_t clock_havoc_end;
-
-clock_t clock_bandit_begin; // variables to measure times inside the code 
-clock_t clock_bandit_end;
-
-clock_t clock_start; // clock at fuzzer launch
-clock_t clock_end;
-
-double clock_total_time; // total amount of time spent
-double clock_havoc_time; // time spent in havoc stage
-double clock_bandit_time; // total amount of time spent on bandit code
-
-u64 total_havoc_counter; 
 
 struct custom_mutator {
 
@@ -1135,10 +1071,6 @@ u8 save_if_interesting(afl_state_t *, void *, u32, u8);
 u8 has_new_bits(afl_state_t *, u8 *);
 u8 has_new_bits_unclassified(afl_state_t *, u8 *);
 
-//BANDIT
-u8 has_new_bits_bandit(afl_state_t *, u8 *);
-u8 has_new_bits_unclassified_bandit(afl_state_t *, u8 *);
-
 /* Extras */
 
 void load_extras_file(afl_state_t *, u8 *, u32 *, u32 *, u32);
@@ -1158,6 +1090,8 @@ void write_setup_file(afl_state_t *, u32, char **);
 void write_stats_file(afl_state_t *, u32, double, double, double);
 void maybe_update_plot_file(afl_state_t *, u32, double, double);
 void show_stats(afl_state_t *);
+void show_stats_normal(afl_state_t *);
+void show_stats_pizza(afl_state_t *);
 void show_init_stats(afl_state_t *);
 
 /* StatsD */
@@ -1170,7 +1104,7 @@ int  statsd_format_metric(afl_state_t *afl, char *buff, size_t bufflen);
 /* Run */
 
 void sync_fuzzers(afl_state_t *);
-u32  write_to_testcase(afl_state_t *, void *, u32, u32);
+u32  write_to_testcase(afl_state_t *, void **, u32, u32);
 u8   calibrate_case(afl_state_t *, struct queue_entry *, u8 *, u32, u8);
 u8   trim_case(afl_state_t *, struct queue_entry *, u8 *);
 u8   common_fuzz_stuff(afl_state_t *, u8 *, u32);
@@ -1183,25 +1117,6 @@ u8   pilot_fuzzing(afl_state_t *);
 u8   core_fuzzing(afl_state_t *);
 void pso_updating(afl_state_t *);
 u8   fuzz_one(afl_state_t *);
-
-// BANDIT
-u8 fuzz_one_bandit(afl_state_t *);
-void ucb_update(afl_state_t *, double *, u8 , double *, u64 *, u16 *, u64 *, int );
-void exp3_update(afl_state_t *, double *, u8, double *, u16 *, int);
-
-double * softmax_bandit(double *, int );
-double * softmax_bandit_safe(double *, int);
-
-int select_algorithm_bandit(afl_state_t * , u32);
-void init_probabilities(double *, int);
-void init_arr_u64(u64 *, int, u64);
-void init_arr_double(double *, int, double);
-void seed_bandit_report(afl_state_t *, FILE*);
-void seed_bandit_report_exp3(afl_state_t *, FILE*);
-
-void write_to_file(char *, char *, char *);
-
-void clock_time_spent_report(double, double, double, FILE*);
 
 /* Init */
 
