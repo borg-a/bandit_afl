@@ -76,9 +76,9 @@ else
 endif
 endif
 
-ifeq "$(shell echo 'int main() {return 0; }' | $(CC) -fno-move-loop-invariants -fdisable-tree-cunrolli -x c - -o .test 2>/dev/null && echo 1 || echo 0 ; rm -f .test )" "1"
-	SPECIAL_PERFORMANCE += -fno-move-loop-invariants -fdisable-tree-cunrolli
-endif
+#ifeq "$(shell echo 'int main() {return 0; }' | $(CC) -fno-move-loop-invariants -fdisable-tree-cunrolli -x c - -o .test 2>/dev/null && echo 1 || echo 0 ; rm -f .test )" "1"
+#	SPECIAL_PERFORMANCE += -fno-move-loop-invariants -fdisable-tree-cunrolli
+#endif
 
 #ifeq "$(shell echo 'int main() {return 0; }' | $(CC) $(CFLAGS) -Werror -x c - -march=native -o .test 2>/dev/null && echo 1 || echo 0 ; rm -f .test )" "1"
 #  ifndef SOURCE_DATE_EPOCH
@@ -92,12 +92,10 @@ ifneq "$(SYS)" "Darwin"
   #  SPECIAL_PERFORMANCE += -march=native
   #endif
  # OS X does not like _FORTIFY_SOURCE=2
-  ifndef DEBUG
-    CFLAGS_OPT += -D_FORTIFY_SOURCE=2
-  endif
-endif
-
-ifeq "$(SYS)" "Darwin"
+ ifndef DEBUG
+   CFLAGS_OPT += -D_FORTIFY_SOURCE=2
+ endif
+else
   # On some odd MacOS system configurations, the Xcode sdk path is not set correctly
   SDK_LD = -L$(shell xcrun --show-sdk-path)/usr/lib
   LDFLAGS += $(SDK_LD)
@@ -144,12 +142,13 @@ ifdef DEBUG
   $(info Compiling DEBUG version of binaries)
   override CFLAGS += -ggdb3 -O0 -Wall -Wextra -Werror $(CFLAGS_OPT)
 else
-  CFLAGS ?= -O3 -funroll-loops $(CFLAGS_OPT)
+  CFLAGS ?= -O2 $(CFLAGS_OPT) # -funroll-loops is slower on modern compilers
 endif
 
-override CFLAGS += -g -Wno-pointer-sign -Wno-variadic-macros -Wall -Wextra -Wpointer-arith \
+override CFLAGS += -g -Wno-pointer-sign -Wno-variadic-macros -Wall -Wextra -Wno-pointer-arith \
 			-fPIC -I include/ -DAFL_PATH=\"$(HELPER_PATH)\" \
-			  -DBIN_PATH=\"$(BIN_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\"
+			-DBIN_PATH=\"$(BIN_PATH)\" -DDOC_PATH=\"$(DOC_PATH)\"
+# -fstack-protector
 
 ifeq "$(SYS)" "FreeBSD"
   override CFLAGS  += -I /usr/local/include/
@@ -175,7 +174,7 @@ ifeq "$(SYS)" "Haiku"
   SHMAT_OK=0
   override CFLAGS  += -DUSEMMAP=1 -Wno-error=format
   override LDFLAGS += -Wno-deprecated-declarations -lgnu -lnetwork
-  SPECIAL_PERFORMANCE += -DUSEMMAP=1
+  #SPECIAL_PERFORMANCE += -DUSEMMAP=1
 endif
 
 AFL_FUZZ_FILES = $(wildcard src/afl-fuzz*.c)
@@ -247,9 +246,6 @@ else
 endif
 
 ifneq "$(filter Linux GNU%,$(SYS))" ""
- ifndef DEBUG
-  override CFLAGS += -D_FORTIFY_SOURCE=2
- endif
   override LDFLAGS += -ldl -lrt -lm
 endif
 
@@ -377,6 +373,7 @@ help:
 	@echo INTROSPECTION - compile afl-fuzz with mutation introspection
 	@echo NO_PYTHON - disable python support
 	@echo NO_SPLICING - disables splicing mutation in afl-fuzz, not recommended for normal fuzzing
+	@echo NO_NYX - disable building nyx mode dependencies
 	@echo AFL_NO_X86 - if compiling on non-intel/amd platforms
 	@echo "LLVM_CONFIG - if your distro doesn't use the standard name for llvm-config (e.g. Debian)"
 	@echo "=========================================="
@@ -426,7 +423,7 @@ afl-as: src/afl-as.c include/afl-as.h $(COMM_HDR) | test_x86
 	@ln -sf afl-as as
 
 src/afl-performance.o : $(COMM_HDR) src/afl-performance.c include/hash.h
-	$(CC) $(CFLAGS) -Iinclude $(SPECIAL_PERFORMANCE) -O3 -fno-unroll-loops -c src/afl-performance.c -o src/afl-performance.o
+	$(CC) $(CFLAGS) $(CFLAGS_OPT) -Iinclude -c src/afl-performance.c -o src/afl-performance.o
 
 src/afl-common.o : $(COMM_HDR) src/afl-common.c include/common.h
 	$(CC) $(CFLAGS) $(CFLAGS_FLTO) -c src/afl-common.c -o src/afl-common.o
@@ -570,7 +567,7 @@ all_done: test_build
 
 .PHONY: clean
 clean:
-	rm -rf $(PROGS) afl-fuzz-document afl-as as afl-g++ afl-clang afl-clang++ *.o src/*.o *~ a.out core core.[1-9][0-9]* *.stackdump .test .test1 .test2 test-instr .test-instr0 .test-instr1 afl-cs-proxy afl-qemu-trace afl-gcc-fast afl-g++-fast ld *.so *.8 test/unittests/*.o test/unittests/unit_maybe_alloc test/unittests/preallocable .afl-* afl-gcc afl-g++ afl-clang afl-clang++ test/unittests/unit_hash test/unittests/unit_rand *.dSYM
+	rm -rf $(PROGS) afl-fuzz-document afl-as as afl-g++ afl-clang afl-clang++ *.o src/*.o *~ a.out core core.[1-9][0-9]* *.stackdump .test .test1 .test2 test-instr .test-instr0 .test-instr1 afl-cs-proxy afl-qemu-trace afl-gcc-fast afl-g++-fast ld *.so *.8 test/unittests/*.o test/unittests/unit_maybe_alloc test/unittests/preallocable .afl-* afl-gcc afl-g++ afl-clang afl-clang++ test/unittests/unit_hash test/unittests/unit_rand *.dSYM lib*.a
 	-$(MAKE) -f GNUmakefile.llvm clean
 	-$(MAKE) -f GNUmakefile.gcc_plugin clean
 	-$(MAKE) -C utils/libdislocator clean
@@ -629,7 +626,9 @@ ifeq "$(ARCH)" "aarch64"
 	-$(MAKE) -C coresight_mode
 endif
 ifeq "$(SYS)" "Linux"
+ifndef NO_NYX
 	-cd nyx_mode && ./build_nyx_support.sh
+endif
 endif
 	-cd qemu_mode && sh ./build_qemu_support.sh
 	-cd unicorn_mode && unset CFLAGS && sh ./build_unicorn_support.sh
@@ -649,7 +648,9 @@ ifeq "$(ARCH)" "aarch64"
 	-$(MAKE) -C coresight_mode
 endif
 ifeq "$(SYS)" "Linux"
+ifndef NO_NYX
 	-cd nyx_mode && ./build_nyx_support.sh
+endif
 endif
 	-cd qemu_mode && sh ./build_qemu_support.sh
 	-cd unicorn_mode && unset CFLAGS && sh ./build_unicorn_support.sh
@@ -665,7 +666,9 @@ endif
 	-$(MAKE) -C utils/libtokencap
 	# -$(MAKE) -C utils/plot_ui
 ifeq "$(SYS)" "Linux"
+ifndef NO_NYX
 	-cd nyx_mode && ./build_nyx_support.sh
+endif
 endif
 
 %.8:	%
