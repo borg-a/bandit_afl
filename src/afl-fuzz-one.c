@@ -2585,7 +2585,7 @@ havoc_stage:
           snprintf(afl->m_tmp, sizeof(afl->m_tmp), " SUBBYTE_");
           strcat(afl->mutation, afl->m_tmp);
 #endif
-          out_buf[rand_below(afl, temp_len)]--;
+          out_buf[rand_below(afl, temp_len)]++;
           break;
 
         }
@@ -2892,14 +2892,6 @@ havoc_stage:
     }
 
     if (common_fuzz_stuff(afl, out_buf, temp_len)) { goto abandon_entry; }
-
-    if ((!afl->queue_cur->virgin_bits)){ // generate seed virgin bits map if first time
-        afl->queue_cur->virgin_bits = ck_alloc(afl->bandit_map_size);
-
-        memset(afl->queue_cur->virgin_bits, 255, afl->bandit_map_size);
-        //printf("virgin map generated for seed: %d \n",afl->queue_cur->id);
-    }
-    u8 reward = has_new_bits(afl, afl->queue_cur->virgin_bits) ? 1 : 0;
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */

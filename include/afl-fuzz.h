@@ -193,8 +193,6 @@ struct queue_entry {
 
   struct queue_entry *mother;           /* queue entry this based on        */
 
-  u8 *virgin_bits;
-
 };
 
 struct extra_data {
@@ -388,7 +386,7 @@ typedef struct afl_env_vars {
       afl_bench_until_crash, afl_debug_child, afl_autoresume, afl_cal_fast,
       afl_cycle_schedules, afl_expand_havoc, afl_statsd, afl_cmplog_only_new,
       afl_exit_on_seed_issues, afl_try_affinity, afl_ignore_problems,
-      afl_keep_timeouts, afl_pizza_mode, afl_no_crash_readme;
+      afl_keep_timeouts, afl_pizza_mode;
 
   u8 *afl_tmpdir, *afl_custom_mutator_library, *afl_python_module, *afl_path,
       *afl_hang_tmout, *afl_forksrv_init_tmout, *afl_preload,
@@ -579,8 +577,7 @@ typedef struct afl_state {
       last_find_time,                   /* Time for most recent path (ms)   */
       last_crash_time,                  /* Time for most recent crash (ms)  */
       last_hang_time,                   /* Time for most recent hang (ms)   */
-      exit_on_time,                     /* Delay to exit if no new paths    */
-      sync_time;                        /* Sync time (ms)                   */
+      exit_on_time;                     /* Delay to exit if no new paths    */
 
   u32 slowest_exec_ms,                  /* Slowest testcase non hang in ms  */
       subseq_tmouts;                    /* Number of timeouts in a row      */
@@ -759,8 +756,6 @@ typedef struct afl_state {
   /* Refs to each queue entry with cached testcase (for eviction, if cache_count
    * is too large) */
   struct queue_entry **q_testcase_cache;
-
-  u32 bandit_map_size;
 
 #ifdef INTROSPECTION
   char  mutation[8072];
