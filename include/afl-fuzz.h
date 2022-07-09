@@ -193,6 +193,8 @@ struct queue_entry {
 
   struct queue_entry *mother;           /* queue entry this based on        */
 
+  u8 *virgin_bits;
+
 };
 
 struct extra_data {
@@ -756,6 +758,8 @@ typedef struct afl_state {
   /* Refs to each queue entry with cached testcase (for eviction, if cache_count
    * is too large) */
   struct queue_entry **q_testcase_cache;
+
+  u32 bandit_map_size;
 
 #ifdef INTROSPECTION
   char  mutation[8072];

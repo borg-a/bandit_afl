@@ -2148,6 +2148,8 @@ int main(int argc, char **argv_orig, char **envp) {
   memset(afl->virgin_tmout, 255, map_size);
   memset(afl->virgin_crash, 255, map_size);
 
+  afl->bandit_map_size = map_size;
+
   perform_dry_run(afl);
 
   if (afl->q_testcase_max_cache_entries) {
